@@ -1,0 +1,799 @@
+---
+title: "oekologie_ungleichheit_finalcode"
+author: "Aichner Nicolas"
+output:
+pdf_document: default
+word_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#https://graebnerc.github.io/RforSocioEcon/index.html
+#https://uni-duisburg-essen.sciebo.de/s/AaHY9RLReRa6MRd?path=%2F
+#https://stackoverflow.com/questions/34709145/how-do-i-create-interaction-terms-in-a-linear-regression-model-in-r-that-uses-a
+#https://www.geeksforgeeks.org/how-to-include-interaction-in-regression-using-r-programming/
+#https://stats.stackexchange.com/questions/273637/multiple-regression-when-to-use-interaction-terms
+```{r include=FALSE}
+library(here)
+here::set_here()
+library(tidyverse)
+library(data.table)
+library(ggpubr)
+library(ggrepel)
+library(scales)
+library(tufte)
+library(gapminder)
+library(viridis)
+library(latex2exp)
+library(WDI)
+library(countrycode)
+library(dplyr)
+library(MASS)
+library(zoo)
+library(knitr)
+library(broom)
+library(tinytex)
+library(fixest)
+library(plm)
+library(lmtest)
+library(AER)
+library(stargazer)
+library(Matrix)
+library(lfe)
+```
+##Erstellung Datensatz
+##SWIID Daten
+```{r include=FALSE}
+datenpfad_swiid <- here::here("Data/Raw/swiid9_0_summary.csv")
+daten_swiid <- data.table::fread(datenpfad_swiid,
+select = c("country", "year", "gini_disp"))
+daten_swiid
+```
+##CO2Daten
+```{r include=FALSE}
+#CO2Data:
+datenpfad_carbon <- here::here("Data/Raw/CO2_pcapita_consumption_1990_2018_globalcarbonatlas.csv")
+daten_carbon_wide <- data.table::fread(datenpfad_carbon,
+skip = 1,
+colClasses = list(integer=1, double = 2:222),
+dec = ",")
+colnames(daten_carbon_wide) [1] <- "year"
+daten_carbon_long <- tidyr::pivot_longer(data = daten_carbon_wide, cols=any_of(c(2:222)), names_to = "country", values_to = "carbon_emission")
+daten_carbon_tidy <- daten_carbon_long %>%
+na.omit()
+daten_carbon_tidy
+```
+##Merge
+```{r include=FALSE}
+daten_tidy_merge <- dplyr::inner_join(daten_swiid, daten_carbon_tidy, by=c("year"="year", "country"="country"))
+daten_tidy_merge
+#Speichern
+datei_name <- here::here("Data/Tidy/datensatz_tidy_carbon_ginidisp.csv")
+data.table::fwrite(daten_tidy_merge, file = datei_name)
+```
+##Iso3codes
+```{r include=FALSE}
+daten_tidy_mergeiso3 <- daten_tidy_merge %>%
+dplyr::mutate(
+country = countrycode::countrycode(country, "country.name", "iso3c"))
+head(daten_tidy_mergeiso3)
+```
+##GNI Per Capita
+Indicator: GNI per capita, PPP (current international $)
+```{r include=FALSE}
+datenpfad_gni <- here::here("Data/Raw/GNI_pc_PPP.csv")
+daten_gni <- data.table::fread(datenpfad_gni,
+skip = 4,
+header = TRUE,
+dec = ".",
+drop = c("Country Name", "Indicator Code", "2020", "V66", "Indicator Name"),
+colClasses = list(character=1, double = 2:61))
+daten_gni
+daten_gni_long <- tidyr::pivot_longer(data = daten_gni, cols=any_of(c(2:62)), names_to = "year", values_to = "GNI_per_capita", values_drop_na = TRUE, names_transform = list(year = as.integer))
+daten_gni_long
+```
+##merge2
+```{r include=FALSE}
+daten_tidy_merge2 <- dplyr::inner_join(daten_tidy_mergeiso3, daten_gni_long, by=c("year"="year", "country"="Country Code"))
+daten_tidy_merge2
+```
+##GWI Daten Corruption Controll
+```{r include=FALSE}
+datenpfad_gi_cc <- here::here("Data/Raw/Daten_CC_raw.csv")
+data_wgi_cc <- data.table::fread(datenpfad_gi_cc,
+header = TRUE,
+dec = ".",
+drop = 1)
+data_wgi_cc <- data_wgi_cc[-c(118:122),]
+data_wgi_cc
+data_wgi_cc_long <- tidyr::pivot_longer(
+data=data_wgi_cc,
+cols = any_of(2:25),
+names_to = "year",
+values_to = "WGI",
+names_transform = list(year = as.integer)) %>%
+imputeTS::na_interpolation(option = "linear") %>%
+dplyr::mutate(
+countrycode = countrycode::countrycode(Country, origin = "country.name", destination = "iso3c"))
+data_wgi_cc_long[,1] <- list(NULL)
+head(data_wgi_cc_long)
+data_wgi_cc_long
+```
+##World Bank Data - Renewable Energy Cons
+(Ziel: Carbon Entkopplung)
+```{r include=FALSE}
+datenpfad_energy <- here::here("Data/Raw/renewable_energy_share.csv")
+data_renewable_energy <- data.table::fread(datenpfad_energy,
+header = TRUE,
+skip = 4,
+drop = c("Indicator Name", "Indicator Code","1960":"1989", "2016":"2020", "V66", "Country Name"))
+data_renewable_energy %>%
+na.omit()
+data_renewable_energy
+data_renewable_energy_long <- tidyr::pivot_longer(data=data_renewable_energy,
+cols = any_of(2:27),
+names_to = "year",
+values_to = "renewable_energy_share",
+names_transform = list(year = as.integer)) %>%
+na.omit
+data_renewable_energy_long
+```
+##world Bank Data - Share of Urban Population
+```{r include=FALSE}
+Datenpfand_urban_pop <- here::here("Data/Raw/urban_population.csv")
+daten_urban_pop <- data.table::fread(Datenpfand_urban_pop,
+header = TRUE,
+skip = 4,
+drop = c("Indicator Name", "Indicator Code","1960":"1989", "2016":"2020", "Country Name", "V66"))
+daten_urban_pop
+data_urban_pop_long <- tidyr::pivot_longer(data=daten_urban_pop,
+cols = any_of(2:27),
+names_to = "year",
+values_to = "urban_population_share",
+names_transform = list(year = as.integer)) %>%
+na.omit
+data_urban_pop_long
+```
+##Labour Share - GeoFredData
+```{r include=FALSE}
+Datenpfad_labourshare <- here::here("Data/Raw/labour_share.csv")
+data_labour_share <- data.table::fread(Datenpfad_labourshare,
+skip = 1,
+header = TRUE,
+dec = ",",
+drop = c("Series ID", "Region Code", "1994", "1995", "2016":"2019"),
+sep = ";") %>%
+pivot_longer(cols = any_of(2:21),
+names_to = "year",
+values_to = "labour_share",
+names_transform = list(year = as.integer)) %>%
+dplyr::mutate(
+country = countrycode::countrycode(Region_Name, "country.name", "iso3c")) %>%
+na.omit
+data_labour_share
+```
+##Unemployment
+```{r include=FALSE}
+datenpfad_unemployment <- here::here("Data/Raw/unemployment_rate.csv")
+daten_unemp <- data.table::fread(datenpfad_unemployment,
+skip = 4,
+header= TRUE,
+drop = c("Country Name", "Indicator Name", "Indicator Code", "1960":"1995", "2016":"2020", "V66")) %>%
+na.omit %>%
+pivot_longer(cols = any_of(2:21),
+names_to = "year",
+values_to = "unemployment_rate",
+names_transform = list(year = as.integer))
+daten_unemp
+```
+##Metadaten - Base Datensatz
+```{r include=FALSE}
+datenpfad_metadaten <- here::here("Data/Raw/Metadata_Country.csv")
+metadaten_country <- data.table::fread(datenpfad_metadaten,
+header = TRUE,
+drop = c("SpecialNotes", "V6"))
+metadaten_country
+daten_tidy_base <- dplyr::left_join(daten_tidy_merge2, metadaten_country, by=c("country" = "Country Code"))
+daten_tidy_base
+daten_tidy_base3 <- dplyr::left_join( ##Datensatz mit Labourshare
+daten_tidy_base, data_wgi_cc_long, by=c("country" = "countrycode", "year" = "year")) %>%
+dplyr::left_join(
+data_renewable_energy_long, by=c("country" = "Country Code", "year" = "year")) %>%
+na.omit %>%
+dplyr::left_join(
+data_urban_pop_long, by=c("country" = "Country Code", "year" = "year")) %>%
+dplyr::left_join(
+data_labour_share, by=c("country" = "country", "year" = "year")) %>%
+dplyr::select(-Region_Name) %>%
+na.omit
+daten_tidy_base3
+daten_tidy_base2 <- dplyr::left_join( ##Datensatz ohne Labourshare --> Benutzter Datensatzhelp()
+daten_tidy_base, data_wgi_cc_long, by=c("country" = "countrycode", "year" = "year")) %>%
+dplyr::left_join(
+data_renewable_energy_long, by=c("country" = "Country Code", "year" = "year")) %>%
+na.omit %>%
+dplyr::left_join(
+data_urban_pop_long, by=c("country" = "Country Code", "year" = "year")) %>%
+na.omit %>%
+dplyr::left_join(
+daten_unemp, by=c("country" = "Country Code", "year" = "year")) %>%
+unique() %>%
+dplyr::mutate(ID = row_number())
+daten_tidy_base2
+#Suchfunktion für Duplikate:
+duplicated(daten_tidy_base2[,1:2])
+ind <- duplicated(daten_tidy_base2[,1:2])
+daten_tidy_base2[ind,]
+##Summary Statistics
+summary(daten_tidy_base2)
+```
+###Plot - Basedatensatz
+```{r}
+streudiagramm <- ggplot2::ggplot(
+data = daten_tidy_base2,
+mapping = aes(
+x=gini_disp,
+y=carbon_emission)
+) +
+ggplot2::layer(
+geom = "point",
+stat = "identity",
+position = "identity",
+mapping = aes(color=IncomeGroup)) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::labs(title = "Pro Kopf CO2 Emissionen und Gini - gesamtes Sample") +
+ggplot2::scale_y_continuous(name = "Carbon Emission (consumption based, tons/capita)", limits = c(0,60), breaks = seq(0,60,10), expand = c(0,0)) +
+ggplot2::scale_x_continuous(name = "Gini Disposable Income", expand = c(0,0)) +
+ggplot2::scale_color_discrete(name="IncomeGroup") +
+ggplot2::coord_cartesian() +
+ggplot2::facet_null()
+streudiagramm
+```
+###Plot - Carbon WGI
+```{r}
+plot_carbon_wgi <- ggplot2::ggplot(
+data = daten_tidy_base2,
+mapping = aes(
+x=WGI,
+y=gini_disp)
+) +
+ggplot2::layer(
+geom = "point",
+stat = "identity",
+position = "identity",
+mapping = aes(color=IncomeGroup)) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::labs(title = "Per capita Carbon Emissions & WGI - whole sample") +
+ggplot2::scale_y_continuous(name = "Carbon Emission (Metric Tons)") +
+ggplot2::scale_x_continuous(name = "WGI - Control of Corruption") +
+ggplot2::scale_color_discrete(name="IncomeGroup") +
+ggplot2::coord_cartesian() +
+ggplot2::facet_null()
+plot_carbon_wgi
+```
+#Einzeldatensätze
+## Gruppierung Sample nach Einkommen
+```{r}
+data_highinc <- daten_tidy_base2 %>%
+filter(IncomeGroup == "High income") %>%
+na.omit
+data_uppermiddleinc <- daten_tidy_base2 %>%
+filter(IncomeGroup == "Upper middle income") %>%
+na.omit
+data_lowermiddleinc <- daten_tidy_base2 %>%
+filter(IncomeGroup == "Lower middle income") %>%
+na.omit
+data_lowinc <- daten_tidy_base2 %>%
+filter(IncomeGroup == "Low income") %>%
+na.omit
+```
+#Speichern
+```{r}
+datei_name2 <- here::here("Data/Tidy/datensatz_tidy_workingpaper.csv")
+data.table::fwrite(daten_tidy_base2, file = datei_name2)
+```
+#Deskriptve Statistiken
+*--> Vllt eher sortiert nach untersuchter Variable, da dann durch einzelne Gruppen mit avg / sd*
+##carbon Emission
+```{r}
+avgcarbon <- mean(daten_tidy_base2[["carbon_emission"]])
+avgcarbon
+sdcarbon <- sd(daten_tidy_base2[["carbon_emission"]])
+sdcarbon
+avgcarbonhighinc <- mean(data_highinc[["carbon_emission"]])
+avgcarbonhighinc
+sdcarbonhighinc <- sd(data_highinc[["carbon_emission"]])
+sdcarbonhighinc
+avgcarbon_uppermiddleinc <- mean(data_uppermiddleinc [["carbon_emission"]])
+avgcarbon_uppermiddleinc
+sdcarbon_uppermiddleinc <- sd(data_uppermiddleinc [["carbon_emission"]])
+sdcarbon_uppermiddleinc
+avgcarbon_lowermiddleinc <- mean(data_lowermiddleinc [["carbon_emission"]])
+avgcarbon_lowermiddleinc
+sdcarbon_lowermiddleinc <- sd(data_lowermiddleinc [["carbon_emission"]])
+sdcarbon_lowermiddleinc
+avgcarbon_lowinc <- mean(data_lowinc [["carbon_emission"]])
+avgcarbon_lowinc
+sdcarbon_lowinc <- sd(data_lowinc [["carbon_emission"]])
+sdcarbon_lowinc
+```
+##Gini
+```{r}
+avggini <- mean(daten_tidy_base2[["gini_disp"]])
+avggini
+sdgini <- sd(daten_tidy_base2[["gini_disp"]])
+sdgini
+avgcarbonhighinc <- mean(data_highinc[["carbon_emission"]])
+avgcarbonhighinc
+sdcarbonhighinc <- sd(data_highinc[["carbon_emission"]])
+sdcarbonhighinc
+avgcarbon_uppermiddleinc <- mean(data_uppermiddleinc [["carbon_emission"]])
+avgcarbon_uppermiddleinc
+sdcarbon_uppermiddleinc <- sd(data_uppermiddleinc [["carbon_emission"]])
+sdcarbon_uppermiddleinc
+avgcarbon_lowermiddleinc <- mean(data_lowermiddleinc [["carbon_emission"]])
+avgcarbon_lowermiddleinc
+sdcarbon_lowermiddleinc <- sd(data_lowermiddleinc [["carbon_emission"]])
+sdcarbon_lowermiddleinc
+avgcarbon_lowinc <- mean(data_lowinc [["carbon_emission"]])
+avgcarbon_lowinc
+sdcarbon_lowinc <- sd(data_lowinc [["carbon_emission"]])
+sdcarbon_lowinc
+```
+##Standardabeichungen Variablen
+```{r}
+sd_GNIpc <- sd(daten_tidy_base2[["GNI_per_capita"]])
+sd_GNIpc
+sd_WGI <- sd(daten_tidy_base2[["WGI"]])
+sd_WGI
+sd_renewable <- sd(daten_tidy_base2[["renewable_energy_share"]])
+sd_renewable
+sd_urbanpop <- sd(daten_tidy_base2[["urban_population_share"]])
+sd_urbanpop
+```
+#WGI - CC
+```{r include=FALSE}
+avgWGI <- mean(daten_tidy_base2[["WGI"]])
+avgWGI
+sdWGI <- sd(daten_tidy_base2[["WGI"]])
+sdWGI
+avgcarbonhighinc <- mean(data_highinc[["carbon_emission"]])
+avgcarbonhighinc
+sdcarbonhighinc <- sd(data_highinc[["carbon_emission"]])
+sdcarbonhighinc
+avgcarbon_uppermiddleinc <- mean(data_uppermiddleinc [["carbon_emission"]])
+avgcarbon_uppermiddleinc
+sdcarbon_uppermiddleinc <- sd(data_uppermiddleinc [["carbon_emission"]])
+sdcarbon_uppermiddleinc
+avgcarbon_lowermiddleinc <- mean(data_lowermiddleinc [["carbon_emission"]])
+avgcarbon_lowermiddleinc
+sdcarbon_lowermiddleinc <- sd(data_lowermiddleinc [["carbon_emission"]])
+sdcarbon_lowermiddleinc
+avgcarbon_lowinc <- mean(data_lowinc [["carbon_emission"]])
+avgcarbon_lowinc
+sdcarbon_lowinc <- sd(data_lowinc [["carbon_emission"]])
+sdcarbon_lowinc
+```
+##Korrelation
+###Ungleichheit & Carbon nach Income Groups
+```{r}
+cor(data_highinc[["carbon_emission"]], data_highinc[["gini_disp"]])
+cor(data_uppermiddleinc[["carbon_emission"]], data_uppermiddleinc[["gini_disp"]])
+cor(data_lowermiddleinc[["carbon_emission"]], data_lowermiddleinc[["gini_disp"]])
+cor(data_lowinc[["carbon_emission"]], data_lowinc[["gini_disp"]])
+```
+###Plot für Correlationen
+####highincome
+#####Carbon - Gini
+```{r include=FALSE}
+data_highinc
+plotcorhighinc <- ggplot2::ggplot(
+data = data_highinc,
+mapping = aes(
+x=gini_disp,
+y=carbon_emission)
+) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::geom_point(alpha=0.75) +
+ggplot2::labs(title = "PerCapita Carbon Emissions & Income Inequality - High Income Countries") +
+ggplot2::scale_y_continuous(name = "Carbon Emission") +
+ggplot2::scale_x_continuous(
+labels = scales::percent_format(accuracy = 1, scale = 1)
+)
+plotcorhighinc
+cor(data_highinc[["carbon_emission"]], data_highinc[["gini_disp"]])
+```
+#####carbon - WGI
+```{r include=FALSE}
+plotcorhighinc_carbwgi <- ggplot2::ggplot(
+data = data_highinc,
+mapping = aes(
+x=WGI,
+y=carbon_emission)
+) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::geom_point(alpha=0.75) +
+ggplot2::labs(title = "PerCapita Carbon Emissions & wGI - High Income Countries") +
+ggplot2::scale_y_continuous(name = "Carbon Emission") +
+ggplot2::scale_x_continuous(
+labels = scales::percent_format(accuracy = 1, scale = 1)
+)
+plotcorhighinc_carbwgi
+cor(data_highinc[["carbon_emission"]], data_highinc[["WGI"]])
+```
+####uppermiddleincome
+##### Carbon ~ Ineq
+```{r include=FALSE}
+data_uppermiddleinc
+plotcoruminc <- ggplot2::ggplot(
+data = data_uppermiddleinc,
+mapping = aes(
+x=gini_disp,
+y=carbon_emission)
+) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::geom_point(alpha=0.75) +
+ggplot2::labs(title = "PerCapita Carbon Emissions & Income Inequality - Upper Middle Income Countries") +
+ggplot2::scale_y_continuous(name = "Carbon Emission") +
+ggplot2::scale_x_continuous(
+labels = scales::percent_format(accuracy = 1, scale = 1)
+)
+plotcoruminc
+cor(data_uppermiddleinc[["carbon_emission"]], data_uppermiddleinc[["gini_disp"]])
+```
+##### Carbon ~ WGI
+```{r include=FALSE}
+data_uppermiddleinc
+plotcorum_carbqgi <- ggplot2::ggplot(
+data = data_uppermiddleinc,
+mapping = aes(
+x=WGI,
+y=carbon_emission)
+) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::geom_point(alpha=0.75) +
+ggplot2::labs(title = "PerCapita Carbon Emissions & WGI - Upper Middle Income Countries") +
+ggplot2::scale_y_continuous(name = "Carbon Emission") +
+ggplot2::scale_x_continuous(
+labels = scales::percent_format(accuracy = 1, scale = 1)
+)
+plotcorum_carbqgi
+cor(data_uppermiddleinc[["carbon_emission"]], data_uppermiddleinc[["WGI"]])
+```
+####lowermiddleincome
+##### Carbon ~ Gini
+```{r include=FALSE}
+data_lowermiddleinc
+plotcorlminc <- ggplot2::ggplot(
+data = data_lowermiddleinc,
+mapping = aes(
+x=gini_disp,
+y=carbon_emission)
+) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::geom_point(alpha=0.75) +
+ggplot2::labs(title = "PerCapita Carbon Emissions & Income Inequality - Lower Middle Income Countries") +
+ggplot2::scale_y_continuous(name = "Carbon Emission") +
+ggplot2::scale_x_continuous(
+labels = scales::percent_format(accuracy = 1, scale = 1)
+)
+plotcorlminc
+cor(data_lowermiddleinc[["carbon_emission"]], data_lowermiddleinc[["gini_disp"]])
+```
+##### Carbon ~ WGI
+```{r include=FALSE}
+data_lowermiddleinc
+plotcorlmcarbwgi <- ggplot2::ggplot(
+data = data_lowermiddleinc,
+mapping = aes(
+x=WGI,
+y=carbon_emission)
+) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::geom_point(alpha=0.75) +
+ggplot2::labs(title = "PerCapita Carbon Emissions & WGI - Lower Middle Income Countries") +
+ggplot2::scale_y_continuous(name = "Carbon Emission") +
+ggplot2::scale_x_continuous(
+labels = scales::percent_format(accuracy = 1, scale = 1)
+)
+plotcorlmcarbwgi
+cor(data_lowermiddleinc[["carbon_emission"]], data_lowermiddleinc[["WGI"]])
+```
+####lowerincome
+#####Carbon ~ Ineq
+```{r include=FALSE}
+data_lowinc
+plotcorlinc <- ggplot2::ggplot(
+data = data_lowinc,
+mapping = aes(
+x=gini_disp,
+y=carbon_emission)
+) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::geom_point(alpha=0.75) +
+ggplot2::labs(title = "PerCapita Carbon Emissions & Income Inequality - Low Income Countries") +
+ggplot2::scale_y_continuous(name = "Carbon Emission") +
+ggplot2::scale_x_continuous(
+labels = scales::percent_format(accuracy = 1, scale = 1)
+)
+plotcorlinc
+cor(data_lowinc[["carbon_emission"]], data_lowinc[["gini_disp"]])
+```
+##### Carbon ~ Corruption Index
+```{r include=FALSE}
+data_lowinc
+plotcorlcarbwgi <- ggplot2::ggplot(
+data = data_lowinc,
+mapping = aes(
+x=WGI,
+y=carbon_emission)
+) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::geom_point(alpha=0.75) +
+ggplot2::labs(title = "Income Inequality & WGI - Low Income Countries") +
+ggplot2::scale_y_continuous(name = "Carbon Emission") +
+ggplot2::scale_x_continuous(
+labels = scales::percent_format(accuracy = 1, scale = 1)
+)
+plotcorlcarbwgi
+cor(data_lowinc[["carbon_emission"]], data_lowinc[["WGI"]])
+```
+#####Carbon - Corruption
+```{r include=FALSE}
+plotcorlinc_carbwgi <- ggplot2::ggplot(
+data = data_lowinc,
+mapping = aes(
+x=WGI,
+y=carbon_emission)
+) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::geom_point(alpha=0.75) +
+ggplot2::labs(title = "PerCapita Carbon Emissions & WGI - Low Income Countries") +
+ggplot2::scale_y_continuous(name = "Carbon Emission") +
+ggplot2::scale_x_continuous(
+labels = scales::percent_format(accuracy = 1, scale = 1)
+)
+plotcorlinc
+cor(data_lowinc[["gini_disp"]], data_lowinc[["WGI"]])
+```
+#Einteilung in Ländergruppen
+##Einteilung in low Carbon - High Carbon Countries
+##Einteilung
+##EInteilung in Länder mit hoher Ungleichheit und niedriger
+```{r}
+quantile(daten_tidy_base[["gini_disp"]], c(0.25, 0.5, 0.75))
+```
+```{r include=FALSE}
+data_highineq <- daten_tidy_base2 %>% #Länder mit Ungleichheit in den oberen 75%
+filter(gini_disp >= 44.5)
+data_highineq
+data_middleineq <- daten_tidy_base2 %>% #Länder mit Ungleichheit zwischen dem 25. und 75 Perzentil
+filter(gini_disp > 31.2, gini_disp < 44.5)
+data_middleineq
+data_lowineq <- daten_tidy_base2 %>% #Länder mit Ungleichheit zwischen dem 25. und 75 Perzentil
+filter(gini_disp < 31.2)
+data_lowineq
+#SuFu für Duplikate
+duplicated(data_highineq[,1:2])
+ind <- duplicated(data_highineq[,1:2])
+data_highineq[ind,]
+```
+#Regressionen
+##Proberegression gesamtes sample
+```{r include=FALSE}
+head(daten_tidy_base2)
+ols_carbon_income <- lm(formula = carbon_emission ~ GNI_per_capita, data = daten_tidy_base2)
+ols_carbon_income
+summary(ols_carbon_income)
+ols_carbon_ineq_gesamt <- lm(formula = carbon_emission ~ gini_disp, data = daten_tidy_base2)
+ols_carbon_ineq_gesamt
+summary(ols_carbon_ineq_gesamt)
+ols_carbon_wgi_gesamt <- lm(formula = carbon_emission ~ WGI, data = daten_tidy_base2)
+ols_carbon_wgi_gesamt
+summary(ols_carbon_wgi_gesamt)
+ols_carbon_ineq_wgi_gesamt <- lm(formula = carbon_emission ~ gini_disp + WGI + GNI_per_capita + renewable_energy_share, data = daten_tidy_base2)
+ols_carbon_ineq_wgi_gesamt
+summary(ols_carbon_ineq_wgi_gesamt)
+bptest(ols_carbon_ineq_wgi_gesamt)
+#Panelschätzung: fixed effects
+plm_carbon_ineq_wgi_gesamt <- plm(carbon_emission ~ gini_disp + WGI + GNI_per_capita + renewable_energy_share + urban_population_share, data = daten_tidy_base2, model = "within", index = c("country", "year"))
+plm_carbon_ineq_wgi_gesamt
+summary(plm_carbon_ineq_wgi_gesamt)
+var_covar_matrix <- vcovHC(plm_carbon_ineq_wgi_gesamt, type = "HC1")
+var_covar_matrix
+coeftest(plm_carbon_ineq_wgi_gesamt, vcov. = var_covar_matrix)
+##lfe package für fixed effects --> Liefert gültige R^2
+fixefftest <- felm(formula = carbon_emission ~ gini_disp + WGI + GNI_per_capita + renewable_energy_share + urban_population_share + (gini_disp*WGI) | country + year, data = daten_tidy_base2)
+summary(fixefftest)
+coeftest(fixefftest, vcov. = vcovHC, type = "HC1")
+```
+Zusammenhang ##Regression Zsh Carbon ~ Gini
+###Gesamtes Sample
+```{r}
+lfe_carbon_ineq_wgi_gesamt <- felm(formula = carbon_emission ~ gini_disp + WGI + GNI_per_capita + renewable_energy_share + urban_population_share + (gini_disp*WGI) | country + year, data = daten_tidy_base2)
+summary(lfe_carbon_ineq_wgi_gesamt)
+coeftest(lfe_carbon_ineq_wgi_gesamt, vcov. = vcovHC, type = "HC1")
+# Estimate Std. Error t value Pr(>|t|)
+#gini_disp -9.7737e-03 1.9898e-02 -0.4912 0.6233
+#WGI -5.1687e-03 1.9402e-02 -0.2664 0.7900
+#GNI_per_capita -3.5891e-07 2.8129e-05 -0.0128 0.9898
+#renewable_energy_share -5.0183e-02 8.7078e-03 -5.7630 9.598e-09 ***
+#urban_population_share 8.1104e-02 1.7348e-02 4.6752 3.140e-06 ***
+#gini_disp:WGI 6.3883e-05 4.4553e-04 0.1434 0.8860
+```
+###highInc
+```{r}
+##lfe
+lfe_carbon_ineq_wgi_highinc <- felm(formula = carbon_emission ~ gini_disp + WGI + GNI_per_capita + renewable_energy_share + urban_population_share + (gini_disp*WGI) | country + year, data = data_highinc)
+summary(lfe_carbon_ineq_wgi_highinc)
+coeftest(lfe_carbon_ineq_wgi_highinc, vcov. = vcovHC, type = "HC1")
+```
+####Correlation
+#####Carbon - Gini
+```{r include=FALSE}
+data_highinc
+plotcorhighinc <- ggplot2::ggplot(
+data = data_highinc,
+mapping = aes(
+x=gini_disp,
+y=carbon_emission)
+) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::geom_point(alpha=0.75) +
+ggplot2::labs(title = "PerCapita Carbon Emissions & Income Inequality - High Income Countries") +
+ggplot2::scale_y_continuous(name = "Carbon Emission") +
+ggplot2::scale_x_continuous(
+labels = scales::percent_format(accuracy = 1, scale = 1)
+)
+plotcorhighinc
+cor(data_highinc[["carbon_emission"]], data_highinc[["gini_disp"]])
+```
+###Upper Middle Income
+```{r}
+##lfe
+lfe_carbon_ineq_wgi_uppermiddleinc <- felm(formula = carbon_emission ~ gini_disp + WGI + GNI_per_capita + renewable_energy_share + urban_population_share + (gini_disp*WGI) | country + year, data = data_uppermiddleinc)
+summary(lfe_carbon_ineq_wgi_uppermiddleinc)
+coeftest(lfe_carbon_ineq_wgi_uppermiddleinc, vcov. = vcovHC, type = "HC1")
+```
+###lowermiddle income
+```{r}
+##lfe
+lfe_carbon_ineq_wgi_lowermiddleinc <- felm(formula = carbon_emission ~ gini_disp + WGI + GNI_per_capita + renewable_energy_share + urban_population_share + (gini_disp*WGI) | country + year, data = data_lowermiddleinc)
+summary(lfe_carbon_ineq_wgi_lowermiddleinc)
+coeftest(lfe_carbon_ineq_wgi_lowermiddleinc, vcov. = vcovHC, type = "HC1")
+```
+###lowinc
+```{r}
+##lfe
+lfe_carbon_ineq_wgi_lowinc <- felm(formula = carbon_emission ~ gini_disp + WGI + GNI_per_capita + renewable_energy_share + urban_population_share + (gini_disp*WGI) | country + year, data = data_lowinc)
+summary(lfe_carbon_ineq_wgi_lowinc)
+coeftest(lfe_carbon_ineq_wgi_lowinc, vcov. = vcovHC, type = "HC1")
+```
+##Regressionen nach Ungleichheit - Gini ~ CC
+###Hohe Ungleichheit
+```{r}
+##lfe
+lfe_carbon_ineq_wgi_highineq <- felm(formula = carbon_emission ~ gini_disp + WGI + GNI_per_capita + renewable_energy_share + urban_population_share + (gini_disp*WGI) | country + year, data = data_highineq)
+summary(lfe_carbon_ineq_wgi_highineq)
+coeftest(lfe_carbon_ineq_wgi_highineq, vcov. = vcovHC, type = "HC1")
+```
+```{r include=FALSE}
+data_highineq
+plotcorhighineq <- ggplot2::ggplot(
+data = data_highineq,
+mapping = aes(
+x=gini_disp,
+y=carbon_emission)
+) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::geom_point(alpha=0.75) +
+ggplot2::labs(title = "PerCapita Carbon Emissions & Income Inequality - High Inequality Countries") +
+ggplot2::scale_y_continuous(name = "Carbon Emission") +
+ggplot2::scale_x_continuous(
+labels = scales::percent_format(accuracy = 1, scale = 1)
+)
+plotcorhighineq
+cor(data_highinc[["carbon_emission"]], data_highinc[["gini_disp"]])
+```
+###Mittlere Ungleichheit
+```{r echo=FALSE}
+##lfe
+lfe_carbon_ineq_wgi_middleineq <- felm(formula = carbon_emission ~ gini_disp + WGI + GNI_per_capita + renewable_energy_share + urban_population_share + (gini_disp*WGI) | country + year, data = data_middleineq)
+summary(lfe_carbon_ineq_wgi_middleineq)
+coeftest(lfe_carbon_ineq_wgi_middleineq, vcov. = vcovHC, type = "HC1")
+```
+```{r include=FALSE}
+data_middleineq
+plotcormiddleineq <- ggplot2::ggplot(
+data = data_middleineq,
+mapping = aes(
+x=gini_disp,
+y=carbon_emission)
+) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::geom_point(alpha=0.75) +
+ggplot2::labs(title = "PerCapita Carbon Emissions & Income Inequality - High Inequality Countries") +
+ggplot2::scale_y_continuous(name = "Carbon Emission") +
+ggplot2::scale_x_continuous(
+labels = scales::percent_format(accuracy = 1, scale = 1)
+)
+plotcormiddleineq
+cor(data_middleineq[["carbon_emission"]], data_middleineq[["gini_disp"]])
+```
+###Niedrige Ungleichheit
+```{r}
+##lfe
+lfe_carbon_ineq_wgi_lowineq <- felm(formula = carbon_emission ~ gini_disp + WGI + GNI_per_capita + renewable_energy_share + urban_population_share + (gini_disp*WGI) | country + year, data = data_lowineq)
+summary(lfe_carbon_ineq_wgi_lowineq)
+coeftest(lfe_carbon_ineq_wgi_lowineq, vcov. = vcovHC, type = "HC1")
+```
+```{r include=FALSE}
+data_lowineq
+plotcorlowineq <- ggplot2::ggplot(
+data = data_lowineq,
+mapping = aes(
+x=gini_disp,
+y=carbon_emission)
+) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::geom_point(alpha=0.75) +
+ggplot2::labs(title = "PerCapita Carbon Emissions & Income Inequality - High Inequality Countries") +
+ggplot2::scale_y_continuous(name = "Carbon Emission") +
+ggplot2::scale_x_continuous(
+labels = scales::percent_format(accuracy = 1, scale = 1)
+)
+plotcorlowineq
+cor(data_lowineq[["carbon_emission"]], data_lowineq[["gini_disp"]])
+```
+####Correlation
+#####Carbon - Gini
+```{r include=FALSE}
+data_highinc
+plotcorhighinc <- ggplot2::ggplot(
+data = data_highinc,
+mapping = aes(
+x=gini_disp,
+y=carbon_emission)
+) +
+ggplot2::geom_smooth(
+method = "lm"
+) +
+ggplot2::geom_point(alpha=0.75) +
+ggplot2::labs(title = "PerCapita Carbon Emissions & Income Inequality - High Income Countries") +
+ggplot2::scale_y_continuous(name = "Carbon Emission") +
+ggplot2::scale_x_continuous(
+labels = scales::percent_format(accuracy = 1, scale = 1)
+)
+plotcorhighinc
+cor(data_highinc[["carbon_emission"]], data_highinc[["gini_disp"]])
+```
